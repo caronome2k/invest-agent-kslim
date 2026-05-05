@@ -16,15 +16,22 @@ from agents.sector_analyzer import sector_analyzer_node
 from agents.recommender import recommender_node
 from agents.report_generator import report_generator_node
 from agents.conversation import conversation_node
+from rag.retriever import enrich_state_with_rag
+
+
+def rag_enricher_node(state: PortfolioState) -> PortfolioState:
+    """RAG 컨텍스트 보강 노드"""
+    return enrich_state_with_rag(state)
 
 
 def build_graph() -> StateGraph:
     """
     LangGraph StateGraph 구성
-    
+
     실행 경로:
     [full_pipeline]  supervisor → data_collector → portfolio_analyzer
-                     → sector_analyzer → recommender → report_generator
+                     → sector_analyzer → rag_enricher → recommender
+                     → report_generator
     [sector_only]    supervisor → data_collector → sector_analyzer
                      → report_generator
     [conversation]   supervisor → conversation
@@ -36,6 +43,7 @@ def build_graph() -> StateGraph:
     graph.add_node("data_collector",     data_collector_node)
     graph.add_node("portfolio_analyzer", portfolio_analyzer_node)
     graph.add_node("sector_analyzer",    sector_analyzer_node)
+    graph.add_node("rag_enricher",       rag_enricher_node)
     graph.add_node("recommender",        recommender_node)
     graph.add_node("report_generator",   report_generator_node)
     graph.add_node("conversation",       conversation_node)
@@ -54,22 +62,25 @@ def build_graph() -> StateGraph:
         }
     )
 
-    # full_pipeline 경로
+    # 공통 경로
     graph.add_edge("data_collector",     "portfolio_analyzer")
     graph.add_edge("portfolio_analyzer", "sector_analyzer")
 
-    # sector_analyzer 이후 조건부 분기
-    # - full_pipeline: recommender → report_generator
+    # sector_analyzer 이후 분기
+    # - full_pipeline: rag_enricher → recommender → report_generator
     # - sector_only  : report_generator 바로 이동
     graph.add_conditional_edges(
         "sector_analyzer",
-        lambda state: "recommender" if state.get("route") in ("daily_briefing", "recommendation") else "report_generator",
+        lambda state: "rag_enricher"
+            if state.get("route") in ("daily_briefing", "recommendation")
+            else "report_generator",
         {
-            "recommender"     : "recommender",
+            "rag_enricher"    : "rag_enricher",
             "report_generator": "report_generator",
         }
     )
 
+    graph.add_edge("rag_enricher",     "recommender")
     graph.add_edge("recommender",      "report_generator")
     graph.add_edge("report_generator", END)
     graph.add_edge("conversation",     END)
@@ -88,7 +99,12 @@ def get_graph():
     return _graph
 
 
-def run_graph(user_input: str, portfolio: dict, period_weeks: int = 4) -> PortfolioState:
+def run_graph(
+    user_input   : str,
+    portfolio    : dict,
+    period_weeks : int = 4,
+    chat_history : list = None,
+) -> PortfolioState:
     """
     그래프 실행 메인 함수
 
@@ -96,6 +112,7 @@ def run_graph(user_input: str, portfolio: dict, period_weeks: int = 4) -> Portfo
         user_input   : 사용자 입력 메시지
         portfolio    : parse_portfolio() 결과
         period_weeks : 섹터 분석 기간 (주)
+        chat_history : 이전 대화 히스토리
 
     Returns:
         최종 PortfolioState
@@ -109,6 +126,10 @@ def run_graph(user_input: str, portfolio: dict, period_weeks: int = 4) -> Portfo
         investor_name   = portfolio["investor_name"],
         period_weeks    = period_weeks,
     )
+
+    # 이전 대화 히스토리 반영
+    if chat_history:
+        initial_state["chat_history"] = chat_history
 
     result = graph.invoke(initial_state)
     return result
@@ -125,10 +146,9 @@ if __name__ == "__main__":
     portfolio = parse_portfolio(filepath)
 
     print("=" * 60)
-    print(" 그래프 실행 테스트")
+    print(" 그래프 실행 테스트 (RAG 포함)")
     print("=" * 60)
 
-    # 테스트 1: Daily 브리핑
     print("\n[테스트 1] Daily 브리핑")
     result = run_graph("오늘 브리핑 보여줘", portfolio)
     print(result["final_report"])
@@ -137,17 +157,3 @@ if __name__ == "__main__":
         print(f"\n[오류 로그]")
         for err in result["error_log"]:
             print(f"  {err}")
-
-    print("\n" + "=" * 60)
-
-    # 테스트 2: 섹터 분석
-    print("\n[테스트 2] 섹터 트렌드 분석")
-    result2 = run_graph("섹터 트렌드 분석해줘", portfolio)
-    print(result2["final_report"])
-
-    print("\n" + "=" * 60)
-
-    # 테스트 3: 대화
-    print("\n[테스트 3] 대화 질의")
-    result3 = run_graph("삼성전자 지금 팔아야 해?", portfolio)
-    print(result3["final_report"])
