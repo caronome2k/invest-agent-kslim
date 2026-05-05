@@ -1,13 +1,17 @@
 # ==========================================
 # tools/us_stock.py
 # yfinance 기반 미국 주식 종가 수집
+# @tool 데코레이터로 LangChain Tool Calling 지원
 # ==========================================
 
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import json
 import yfinance as yf
-from datetime import datetime, timedelta
+from langchain.tools import tool
 
 
-# 미국 섹터 ETF 코드 매핑
 US_SECTOR_ETF = {
     "AI 반도체"  : "SOXX",
     "기술주"     : "XLK",
@@ -24,34 +28,30 @@ US_SECTOR_ETF = {
 }
 
 
-def get_us_stock_price(tickers: list[str]) -> dict:
+@tool
+def get_us_stock_price(tickers_json: str) -> str:
     """
     미국 주식 종목의 최근 종가를 수집합니다.
-
     Args:
-        tickers: 티커 리스트 (예: ["AAPL", "NVDA", "VOO"])
-
+        tickers_json: JSON 배열 문자열 (예: '["AAPL", "NVDA", "VOO"]')
     Returns:
-        {
-            "AAPL": {"name": "Apple Inc.", "close": 189.5, "date": "2025-04-28"},
-            ...
-        }
+        종목별 종가 정보 JSON 문자열
     """
-    result = {}
+    tickers = json.loads(tickers_json)
+    result  = {}
 
     for ticker in tickers:
         try:
             t    = yf.Ticker(ticker)
-            hist = t.history(period="5d")   # 최근 5거래일 (주말 대비 여유)
+            hist = t.history(period="5d")
 
             if hist.empty:
-                result[ticker] = {"error": "데이터 없음", "close": None, "date": None}
+                result[ticker] = {"error": "데이터 없음", "close": None}
                 continue
 
             latest      = hist.iloc[-1]
             latest_date = hist.index[-1].strftime("%Y-%m-%d")
 
-            # 종목명 조회
             try:
                 name = t.info.get("longName") or t.info.get("shortName") or ticker
             except Exception:
@@ -69,23 +69,19 @@ def get_us_stock_price(tickers: list[str]) -> dict:
             }
 
         except Exception as e:
-            result[ticker] = {"error": str(e), "close": None, "date": None}
+            result[ticker] = {"error": str(e), "close": None}
 
-    return result
+    return json.dumps(result, ensure_ascii=False)
 
 
-def get_us_sector_trend(period_weeks: int = 4) -> dict:
+@tool
+def get_us_sector_trend(period_weeks: int = 4) -> str:
     """
     미국 섹터 ETF 기반 섹터 트렌드를 수집합니다.
-
     Args:
-        period_weeks: 분석 기간 (주)
-
+        period_weeks: 분석 기간 (주, 기본값 4)
     Returns:
-        {
-            "AI 반도체": {"change_pct": 18.2, "trend": "UPTREND", ...},
-            ...
-        }
+        섹터별 트렌드 정보 JSON 문자열
     """
     period_str = f"{period_weeks * 7}d"
     result     = {}
@@ -96,13 +92,13 @@ def get_us_sector_trend(period_weeks: int = 4) -> dict:
             hist = t.history(period=period_str)
 
             if hist.empty or len(hist) < 2:
+                result[sector_name] = {"error": "데이터 없음", "trend": "NEUTRAL"}
                 continue
 
             start_price = float(hist.iloc[0]["Close"])
             end_price   = float(hist.iloc[-1]["Close"])
             change_pct  = round((end_price - start_price) / start_price * 100, 2)
 
-            # 트렌드 분류
             if change_pct >= 5.0:
                 trend = "UPTREND"
             elif change_pct <= -5.0:
@@ -124,19 +120,25 @@ def get_us_sector_trend(period_weeks: int = 4) -> dict:
         except Exception as e:
             result[sector_name] = {"error": str(e), "trend": "NEUTRAL"}
 
-    return result
+    return json.dumps(result, ensure_ascii=False)
 
 
-# ------------------------------------------
-# 동작 확인용
-# ------------------------------------------
+# 기존 함수 방식도 유지
+def get_us_stock_price_direct(tickers: list) -> dict:
+    return json.loads(get_us_stock_price.invoke(json.dumps(tickers)))
+
+def get_us_sector_trend_direct(period_weeks: int = 4) -> dict:
+    return json.loads(get_us_sector_trend.invoke(period_weeks))
+
+
 if __name__ == "__main__":
-    print("=== 미국 주식 종가 조회 ===")
-    prices = get_us_stock_price(["AAPL", "NVDA", "VOO"])
-    for ticker, data in prices.items():
-        print(f"  {ticker}: {data}")
+    print("=== @tool 기반 미국 주식 종가 조회 ===")
+    result = get_us_stock_price.invoke('["AAPL", "NVDA", "VOO"]')
+    print(result)
 
-    print("\n=== 미국 섹터 트렌드 조회 (4주) ===")
-    sectors = get_us_sector_trend(period_weeks=4)
-    for sector, data in sectors.items():
-        print(f"  {sector:12s}: {data.get('change_pct', 'N/A'):>6}%  [{data.get('trend', 'N/A')}]")
+    print("\n=== @tool 기반 미국 섹터 트렌드 조회 ===")
+    result = get_us_sector_trend.invoke(4)
+    data   = json.loads(result)
+    for sector, info in data.items():
+        if "error" not in info:
+            print(f"  {sector:12s}: {info.get('change_pct', 'N/A'):>+6.2f}%  [{info.get('trend')}]")

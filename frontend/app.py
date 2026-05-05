@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 from utils.parser import parse_portfolio
-from frontend.pages import briefing_page, sector_page, recommendation_page, chat_page
+from frontend.components import briefing_page, sector_page, recommendation_page, chat_page
 
 # ------------------------------------------
 # 페이지 기본 설정

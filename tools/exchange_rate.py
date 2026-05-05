@@ -1,34 +1,30 @@
 # ==========================================
 # tools/exchange_rate.py
 # yfinance 기반 USD/KRW 환율 수집
-# pykrx get_exchange_rate_ohlcv_by_date 미지원으로 yfinance 대체
+# @tool 데코레이터로 LangChain Tool Calling 지원
 # ==========================================
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import json
 import yfinance as yf
 from datetime import datetime
+from langchain.tools import tool
 
 
-def get_exchange_rate() -> dict:
+@tool
+def get_exchange_rate(dummy: str = "") -> str:
     """
-    yfinance 기반 USD/KRW 환율 수집
-    티커: USDKRW=X (Yahoo Finance 환율 티커)
-
+    USD/KRW 환율을 수집합니다. (Yahoo Finance USDKRW=X)
+    Args:
+        dummy: 사용하지 않음 (tool 인터페이스 호환용)
     Returns:
-        {
-            "USD_KRW"     : 1382.0,
-            "prev_USD_KRW": 1387.0,
-            "change"      : -5.0,
-            "change_dir"  : "▼",
-            "date"        : "2025-04-28",
-            "source"      : "Yahoo Finance"
-        }
+        환율 정보 JSON 문자열
     """
     try:
         ticker = yf.Ticker("USDKRW=X")
-        hist   = ticker.history(period="5d")   # 최근 5거래일
+        hist   = ticker.history(period="5d")
 
         if hist.empty:
             raise ValueError("환율 데이터를 가져올 수 없습니다.")
@@ -41,7 +37,7 @@ def get_exchange_rate() -> dict:
         prev_usd_krw = round(float(prev["Close"]), 2)
         change       = round(usd_krw - prev_usd_krw, 2)
 
-        return {
+        result = {
             "USD_KRW"     : usd_krw,
             "prev_USD_KRW": prev_usd_krw,
             "change"      : change,
@@ -51,7 +47,7 @@ def get_exchange_rate() -> dict:
         }
 
     except Exception as e:
-        return {
+        result = {
             "USD_KRW"     : 1350.0,
             "prev_USD_KRW": 1350.0,
             "change"      : 0.0,
@@ -61,6 +57,8 @@ def get_exchange_rate() -> dict:
             "error"       : str(e),
         }
 
+    return json.dumps(result, ensure_ascii=False)
+
 
 def convert_usd_to_krw(usd_amount: float, rate: float) -> float:
     """USD 금액을 KRW로 환산합니다."""
@@ -68,14 +66,12 @@ def convert_usd_to_krw(usd_amount: float, rate: float) -> float:
 
 
 def calc_fx_impact(
-    us_invest_krw: float,
+    us_invest_krw   : float,
     total_invest_krw: float,
-    prev_rate: float,
-    curr_rate: float,
+    prev_rate       : float,
+    curr_rate       : float,
 ) -> float:
-    """
-    환율 변동이 전체 포트폴리오 수익률에 미치는 영향 계산 (%)
-    """
+    """환율 변동이 전체 포트폴리오 수익률에 미치는 영향 계산 (%)"""
     if total_invest_krw == 0 or prev_rate == 0:
         return 0.0
     fx_effect = (curr_rate - prev_rate) / prev_rate * 100
@@ -83,16 +79,14 @@ def calc_fx_impact(
     return round(fx_effect * us_weight, 2)
 
 
-# ------------------------------------------
-# 동작 확인용
-# ------------------------------------------
-if __name__ == "__main__":
-    print("=== USD/KRW 환율 조회 ===")
-    rate = get_exchange_rate()
-    for key, value in rate.items():
-        print(f"  {key:15s}: {value}")
+# 기존 함수 방식도 유지
+def get_exchange_rate_direct() -> dict:
+    return json.loads(get_exchange_rate.invoke(""))
 
-    print("\n=== USD → KRW 환산 예시 ===")
-    usd = 1000.0
-    krw = convert_usd_to_krw(usd, rate["USD_KRW"])
-    print(f"  ${usd:,.2f} → {krw:,.0f}원  (환율: {rate['USD_KRW']})")
+
+if __name__ == "__main__":
+    print("=== @tool 기반 환율 조회 ===")
+    result = get_exchange_rate.invoke("")
+    data   = json.loads(result)
+    for key, value in data.items():
+        print(f"  {key:15s}: {value}")

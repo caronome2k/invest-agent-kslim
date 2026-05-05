@@ -1,12 +1,14 @@
 # ==========================================
 # agents/graph.py
 # LangGraph StateGraph 전체 흐름 연결
+# MemorySaver Checkpointer 기반 멀티턴 대화 유지
 # ==========================================
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 
 from agents.state import PortfolioState, create_initial_state
 from agents.supervisor import supervisor_node, route_after_supervisor
@@ -27,6 +29,7 @@ def rag_enricher_node(state: PortfolioState) -> PortfolioState:
 def build_graph() -> StateGraph:
     """
     LangGraph StateGraph 구성
+    MemorySaver Checkpointer로 세션별 상태 영속화
 
     실행 경로:
     [full_pipeline]  supervisor → data_collector → portfolio_analyzer
@@ -62,13 +65,9 @@ def build_graph() -> StateGraph:
         }
     )
 
-    # 공통 경로
     graph.add_edge("data_collector",     "portfolio_analyzer")
     graph.add_edge("portfolio_analyzer", "sector_analyzer")
 
-    # sector_analyzer 이후 분기
-    # - full_pipeline: rag_enricher → recommender → report_generator
-    # - sector_only  : report_generator 바로 이동
     graph.add_conditional_edges(
         "sector_analyzer",
         lambda state: "rag_enricher"
@@ -85,7 +84,10 @@ def build_graph() -> StateGraph:
     graph.add_edge("report_generator", END)
     graph.add_edge("conversation",     END)
 
-    return graph.compile()
+    # MemorySaver Checkpointer 적용
+    # thread_id 기반으로 세션별 상태 영속화
+    checkpointer = MemorySaver()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # 전역 그래프 인스턴스 (싱글턴)
@@ -102,8 +104,9 @@ def get_graph():
 def run_graph(
     user_input   : str,
     portfolio    : dict,
-    period_weeks : int = 4,
+    period_weeks : int  = 4,
     chat_history : list = None,
+    session_id   : str  = "default",
 ) -> PortfolioState:
     """
     그래프 실행 메인 함수
@@ -113,6 +116,7 @@ def run_graph(
         portfolio    : parse_portfolio() 결과
         period_weeks : 섹터 분석 기간 (주)
         chat_history : 이전 대화 히스토리
+        session_id   : 세션 ID (Checkpointer thread_id)
 
     Returns:
         최종 PortfolioState
@@ -127,17 +131,15 @@ def run_graph(
         period_weeks    = period_weeks,
     )
 
-    # 이전 대화 히스토리 반영
     if chat_history:
         initial_state["chat_history"] = chat_history
 
-    result = graph.invoke(initial_state)
+    # Checkpointer thread_id로 세션별 상태 관리
+    config = {"configurable": {"thread_id": session_id}}
+    result = graph.invoke(initial_state, config=config)
     return result
 
 
-# ------------------------------------------
-# 동작 확인용
-# ------------------------------------------
 if __name__ == "__main__":
     from utils.parser import parse_portfolio
 
@@ -146,11 +148,15 @@ if __name__ == "__main__":
     portfolio = parse_portfolio(filepath)
 
     print("=" * 60)
-    print(" 그래프 실행 테스트 (RAG 포함)")
+    print(" 그래프 실행 테스트 (Tool Calling + Checkpointer)")
     print("=" * 60)
 
     print("\n[테스트 1] Daily 브리핑")
-    result = run_graph("오늘 브리핑 보여줘", portfolio)
+    result = run_graph(
+        user_input = "오늘 브리핑 보여줘",
+        portfolio  = portfolio,
+        session_id = "test_session",
+    )
     print(result["final_report"])
 
     if result["error_log"]:
